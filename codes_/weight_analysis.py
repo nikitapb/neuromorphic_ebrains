@@ -45,7 +45,7 @@ model_to_keep = [
     'dANN-R', 'dANN-LRF', 'dANN-GRF', 'dANN-F',
     'sANN', 'sANN-LRF', 'sANN-GRF', 'sANN-F',
     'vANN-R', 'vANN-LRF', 'vANN-GRF',
-    'vANN',
+    'vANN', 'dANN-R-DL',
 ]
 
 df_all_ = keep_models(df_all, model_to_keep)
@@ -72,7 +72,7 @@ models = [
     'sparse_ann', 'sparse_ann_global_rfs',
     'sparse_ann_local_rfs', 'sparse_ann_all_to_all',
     'vanilla_ann_random', 'vanilla_ann_local_rfs',
-    'vanilla_ann_global_rfs', 'vanilla_ann',
+    'vanilla_ann_global_rfs', 'vanilla_ann', 'dend_ann_random_sign_constrained',
 ]
 
 for model_, model_type in zip(model_to_keep, models):

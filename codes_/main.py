@@ -15,6 +15,8 @@ import pickle
 import pathlib
 
 from opt import make_masks
+from opt import make_sign_masks
+from opt import project_weights
 from opt import custom_train_loop
 from opt import get_model
 from opt import get_data
@@ -34,6 +36,7 @@ rfs_type = 'somatic'
 model_type = int(sys.argv[5])
 sparse = False
 input_sample = None
+sign_constrained = False
 if model_type == 0:
     # dendritic ANN (dANN) with random connections
     conventional = False
@@ -93,6 +96,18 @@ elif model_type == 11:
     rfs = True
     sparse = True
     input_sample = 'all_to_all'
+elif model_type == 12:
+    # 20% forced <=0, fixed for the whole training run
+    conventional = False
+    rfs = False
+    sign_constrained = True
+
+elif model_type == 13:
+    #20 % forced <= 0, fixed for the whole training run, with local RFs
+    conventional = False 
+    rfs = True
+    rfs_type = 'dendritic'
+    sign_constrained = True
 
 sigma = float(sys.argv[6])
 # Get the data
@@ -157,7 +172,9 @@ if seq_flag:
 else:
     file_tag = ""
 
-# Change the model name if dropout
+# Change the model name if sign-constrained and/or dropout
+if sign_constrained:
+    fname_model += "_sign_constrained"
 if drop_flag:
     fname_model += f"_dropout_{rate_of_drop}"
 
@@ -177,9 +194,17 @@ model = get_model(
 PARAMS = model.get_weights()
 PARAMSmod = [PARAMS[i]*Masks[i] for i in range(len(PARAMS))]
 
+# Build the fixed weight-sign masks (80% positive / 20% negative of the
+# structurally connected weights) and project the initial weights onto
+# them, if this is the sign-constrained model.
+SignMasks = None
+if sign_constrained:
+    SignMasks = make_sign_masks(Masks, neg_fraction=0.2, seed=trial)
+    PARAMSmod = project_weights(PARAMSmod, Masks, SignMasks)
+
 # Set the initial weights by zeroing out not connected nodes.
 model.set_weights(PARAMSmod)
-model_untrained = copy.deepcopy(model)
+#model_untrained = copy.deepcopy(model)
 
 # Instantiate the optimizer and the loss function
 lr = float(sys.argv[14])
@@ -218,10 +243,12 @@ model, out = custom_train_loop(
     shuffle=False if seq_flag else True,
     early_stop=early_stop,
     patience=10,
+    SignMasks=SignMasks,
 )
 
 # Store masks in the output dictionary
 out['Masks'] = Masks
+out['SignMasks'] = SignMasks
 
 if save:
     # the local directory to save the data

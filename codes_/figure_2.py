@@ -25,7 +25,7 @@ plt.rcParams.update(my_style())
 
 palette = [
     '#8de5a1', '#ff9f9b', '#a1c9f4',
-    '#d0bbff', '#8d8d8d'
+    '#d0bbff', '#8d8d8d', '#ffb482'
 ]
 
 datatype = 'fmnist'
@@ -36,7 +36,7 @@ if not os.path.exists(f"{dirname_figs}"):
 seq = False
 seq_tag = "_sequential" if seq else ""
 num_layers = 1
-data_dir = "../DATA/"
+data_dir = "DATA/"
 dirname = f"{data_dir}/results_{datatype}_{num_layers}_layer{seq_tag}/"
 
 # Create the figure
@@ -124,6 +124,8 @@ models_to_keep = [
     'dANN-GRF',
     'pdANN',
     'vANN',
+    'dANN-R-DL',  # dANN-R with a fixed 80% positive / 20% negative
+                  # weight-sign constraint (Dale's-law style)
 ]
 df_all_ = keep_models(df_all, models_to_keep)
 df_test_ = keep_models(df_test, models_to_keep)

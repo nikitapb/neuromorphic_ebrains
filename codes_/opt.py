@@ -490,6 +490,37 @@ def make_masks(
 
     return Masks
 
+def make_sign_masks(Masks, neg_fraction = 0.2, seed = None):
+    """
+    Build a constraint for every weight, to try to force the inhibitory population, to create the restrained weights
+    """
+
+    rng = np.random.default_rng(seed)
+    SignMasks = []
+    for m in Masks:
+        m = np.asarray(m)
+        if m.ndim  == 1:
+            SignMasks.append(None)
+            continue
+        sign = np.ones_like(m, dtype = 'float32')
+        connected_idx = np.flatnonzero(m == 1)
+        n_neg = int(round(neg_fraction * connected_idx.size))
+        neg_idx = rng.choice(connected_idx, size = n_neg, replace = False)
+        sign.flat[neg_idx] = -1.0
+        SignMasks.append(sign)
+    return SignMasks
+
+def project_weights(weights, Masks, SignMasks):
+    """
+    More functions for the constrained weights
+    """
+    out = []
+    for w, m, s in zip(weights, Masks, SignMasks):
+        if s is not None:
+            sw = s * w
+            w = s * (sw * (sw > 0))
+        out.append(w * m)
+    return out 
 
 def get_model_name(
         conventional=False, rfs=False, sparse=False,
@@ -667,11 +698,11 @@ def get_model(
 def custom_train_loop(
         model, loss_fn, optimizer, Masks, batch_size, num_epochs,
         x_train, y_train, x_val, y_val, x_test, y_test,
-        shuffle=True, early_stop=False, patience=0
+        shuffle=True, early_stop=False, patience=0, SignMasks=None
     ):
     """
     Create the custom training loop for better handling and zeroing out gradients based on masks.
-
+ 
     Parameters
     ----------
     model : keras.src.models.functional.Functional
@@ -706,13 +737,13 @@ def custom_train_loop(
     patience : int
         Number of epochs with no improvement after which training will be
         stopped. The default is 0.
-
+ 
     Raises
     ------
     ValueError
         Raise an error if the modified gradient list is not the same size as
         the original.
-
+ 
     Returns
     -------
     model : keras.src.models.functional.Functional
@@ -731,18 +762,18 @@ def custom_train_loop(
     train_loss_metric = keras.metrics.SparseCategoricalCrossentropy()
     val_loss_metric = keras.metrics.SparseCategoricalCrossentropy()
     test_loss_metric = keras.metrics.SparseCategoricalCrossentropy()
-
+ 
     # List with the losses for progBar
     metrics_names = ['train_loss', 'val_loss']
-
+ 
     # initialize early stop params on train begin
     if early_stop:
         wait = 0
         best_weights = None
         stopped_epoch = 0
         best = float("inf")
-
-
+ 
+ 
     @tf.function
     def train_step(x, y):
         with tf.GradientTape() as tape:
@@ -766,7 +797,7 @@ def custom_train_loop(
         train_acc_metric.update_state(y, logits)
         train_loss_metric.update_state(y, logits)
         return loss_value
-
+ 
     @tf.function
     def val_step(x, y):
         val_logits = model(x, training=False)
@@ -775,7 +806,7 @@ def custom_train_loop(
         val_acc_metric.update_state(y, val_logits)
         val_loss_metric.update_state(y, val_logits)
         return loss_value
-
+ 
     @tf.function
     def test_step(x, y):
         test_logits = model(x, training=False)
@@ -784,9 +815,9 @@ def custom_train_loop(
         test_acc_metric.update_state(y, test_logits)
         test_loss_metric.update_state(y, test_logits)
         return loss_value
-
+ 
     train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-
+ 
     # Create the datasets for keras loop.
     if shuffle:
         train_dataset = train_dataset.shuffle(
@@ -799,7 +830,7 @@ def custom_train_loop(
     val_dataset = val_dataset.batch(batch_size)
     test_dataset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
     test_dataset = test_dataset.batch(batch_size)
-
+ 
     # lists to store the results
     train_loss_list, train_acc_list = [], []
     val_loss_list, val_acc_list = [], []
@@ -812,29 +843,37 @@ def custom_train_loop(
             progbar_,
             stateful_metrics=metrics_names
         )
-
+ 
         start_time = time.time()
         # Iterate over the batches of the dataset.
         for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
             train_loss_value = train_step(x_batch_train, y_batch_train)
             # update the bar with the train loss
             progBar.update(step, values=[('train_loss', train_loss_value)])
-
+ 
+            # Enforce a fixed weight-sign constraint (e.g., Dale's-law-style
+            # 80% positive / 20% negative), if one was supplied. Runs in
+            # eager mode, outside the traced `train_step`, once per batch.
+            if SignMasks is not None:
+                model.set_weights(
+                    project_weights(model.get_weights(), Masks, SignMasks)
+                )
+ 
         # store metrics at the end of each train epoch.
         train_acc_list.append(train_acc_metric.result().numpy())
         train_loss_list.append(train_loss_metric.result().numpy())
         # Reset training metrics at the end of each train epoch
         train_acc_metric.reset_state()
         train_loss_metric.reset_state()
-
+ 
         # Run a validation loop at the end of each epoch.
         for step, (x_batch_val, y_batch_val) in enumerate(val_dataset):
             val_step(x_batch_val, y_batch_val)
-
+ 
         # store validation accuracy and loss
         val_acc_list.append(val_acc_metric.result().numpy())
         val_loss_list.append(val_loss_metric.result().numpy())
-
+ 
         # Update progBar with val_loss
         progBar.update(
             progbar_,
@@ -844,15 +883,15 @@ def custom_train_loop(
             ],
             finalize=True
         )
-
+ 
         # Reset val metrics at the end of each val epoch
         val_acc_metric.reset_state()
         val_loss_metric.reset_state()
-
+ 
         print(f"\nTraining acc over epoch: {float(train_acc_list[-1]):.4f}, "
               f"Validation acc over epoch: {float(val_acc_list[-1]):.4f}")
         print(f"\nTime taken for epoch {epoch}: {time.time() - start_time:.2f}s")
-
+ 
         # Eearly stopping: on epoch end
         if early_stop:
             wait += 1
@@ -866,35 +905,35 @@ def custom_train_loop(
                 print("\nRestoring model weights from the end of the best epoch.")
                 model.set_weights(best_weights)
                 break
-
+ 
     # Eearly stopping: on train end
     if early_stop:
         if stopped_epoch > 0:
             print(f"\nEpoch {stopped_epoch + 1}: early stopping")
-
+ 
     # Test on test set
     for step, (x_batch_test, y_batch_test) in enumerate(test_dataset):
         test_step(x_batch_test, y_batch_test)
-
+ 
     # store the test accuracy and loss
     test_acc = test_acc_metric.result().numpy()
     test_loss = test_loss_metric.result().numpy()
-
+ 
     # Update progBar with test_loss
     progBar.update(
         progbar_,
         values=[('test_loss', test_loss)],
         finalize=True
     )
-
+ 
     # Reset test metrics before the end of training
     test_acc_metric.reset_state()
     test_loss_metric.reset_state()
-
+ 
     print(f"Test acc: {float(test_acc):.4f} | "
           f"Test loss: {float(test_loss):.4f}")
     print(f"\nTrain, eval total time: {time.time() - start_time:.2f}s")
-
+ 
     # Save the outputs in a dictionary
     out = {}
     out['train_loss'] = train_loss_list
@@ -905,18 +944,19 @@ def custom_train_loop(
     out['test_loss'] = test_loss
     if early_stop:
         out['stopped'] = stopped_epoch
-
+ 
     return model, out
-
-
+ 
+ 
 def custom_train_loop_torch(
         model, loss_fn, optimizer, Masks, batch_size, num_epochs,
         x_train, y_train, x_val, y_val, x_test, y_test,
-        shuffle=True, early_stop=False, patience=0, device='cpu'
+        shuffle=True, early_stop=False, patience=0, device='cpu',
+        SignMasks=None
     ):
     """
     Create the custom training loop for better handling and zeroing out gradients based on masks.
-
+ 
     Parameters
     ----------
     model : keras.src.models.functional.Functional
@@ -951,13 +991,13 @@ def custom_train_loop_torch(
     patience : int
         Number of epochs with no improvement after which training will be
         stopped. The default is 0.
-
+ 
     Raises
     ------
     ValueError
         Raise an error if the modified gradient list is not the same size as
         the original.
-
+ 
     Returns
     -------
     model : keras.src.models.functional.Functional
@@ -968,7 +1008,7 @@ def custom_train_loop_torch(
     """
     import torch
     os.environ["KERAS_BACKEND"] = "torch"
-
+ 
     # Create torch Datasets
     train_dataset = torch.utils.data.TensorDataset(
         torch.from_numpy(x_train).to(device), torch.from_numpy(y_train).to(device)
@@ -979,7 +1019,7 @@ def custom_train_loop_torch(
     test_dataset = torch.utils.data.TensorDataset(
         torch.from_numpy(x_test).to(device), torch.from_numpy(y_test).to(device)
     )
-
+ 
     # Create DataLoaders for the Datasets
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset, batch_size=batch_size, shuffle=shuffle
@@ -990,23 +1030,23 @@ def custom_train_loop_torch(
     test_dataloader = torch.utils.data.DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False
     )
-
+ 
     # Prepare the metrics
     # Accuracy metrics
     train_acc_metric = keras.metrics.SparseCategoricalAccuracy()
     val_acc_metric = keras.metrics.SparseCategoricalAccuracy()
     test_acc_metric = keras.metrics.SparseCategoricalAccuracy()
-
+ 
     # List with the losses for progBar
     metrics_names = ['train_loss', 'val_loss']
-
+ 
     # initialize early stop params on train begin
     if early_stop:
         wait = 0
         best_weights = None
         stopped_epoch = 0
         best = float("inf")
-
+ 
     # lists to store the results
     train_loss_list, train_acc_list = [], []
     val_loss_list, val_acc_list = [], []
@@ -1019,7 +1059,7 @@ def custom_train_loop_torch(
             progbar_,
             stateful_metrics=metrics_names
         )
-
+ 
         start_time = time.time()
         running_train_loss = 0.0
         # Iterate over the batches of the dataset.
@@ -1030,16 +1070,16 @@ def custom_train_loop_torch(
             running_train_loss += train_loss.cpu().detach().numpy()
             # Update the progbar
             progBar.update(step, values=[('train_loss', train_loss)])
-
+ 
             # Backward pass
             model.zero_grad()
             trainable_weights = [v for v in model.trainable_weights]
-
+ 
             # Call torch.Tensor.backward() on the loss to compute gradients
             # for the weights.
             train_loss.backward()
             gradients = [v.value.grad for v in trainable_weights]
-
+ 
             # Modify the gradients with the masks
             gradients_ = [torch.mul(gradients[i], Masks[i]) for i in range(len(gradients))]
             # Check that updated gradients shape is the same as gradients.
@@ -1048,19 +1088,31 @@ def custom_train_loop_torch(
             # Update weights
             with torch.no_grad():
                 optimizer.apply(gradients_, trainable_weights)
-
+ 
+                # Enforce a fixed weight-sign constraint (e.g., Dale's-law
+                # -style 80% positive / 20% negative), if one was supplied.
+                # `SignMasks[i]` must be a torch tensor on `device` (or
+                # None for unconstrained tensors, e.g. biases), matching
+                # `Masks` in order/shape.
+                if SignMasks is not None:
+                    for v, m, s in zip(trainable_weights, Masks, SignMasks):
+                        w = v.value
+                        if s is not None:
+                            w = s * torch.relu(s * w)
+                        v.assign(w * m)
+ 
             # Update training metric.
             train_acc_metric.update_state(y_batch_train, train_logits)
-
+ 
         # Display metrics at the end of each epoch.
         train_acc = train_acc_metric.result()
         print(f"\nTraining acc over epoch: {float(train_acc):.4f}")
-
+ 
         train_acc_list.append(train_acc.cpu().detach().numpy())
         train_loss_list.append(running_train_loss / (step + 1))
         # Reset training metrics at the end of each epoch
         train_acc_metric.reset_state()
-
+ 
         # Run a validation loop at the end of each epoch.
         running_val_loss = 0.0
         for step, (x_batch_val, y_batch_val) in enumerate(val_dataloader):
@@ -1069,14 +1121,14 @@ def custom_train_loop_torch(
             running_val_loss += val_loss.cpu().detach().numpy()
             # Update val metrics
             val_acc_metric.update_state(y_batch_val, val_logits)
-
+ 
         # Display metrics at the end of each epoch.
         val_acc = val_acc_metric.result()
         val_acc_list.append(val_acc.cpu().detach().numpy())
         val_loss_list.append(running_val_loss / (step + 1))
         # Reset training metrics at the end of each epoch
         val_acc_metric.reset_state()
-
+ 
         # Update progBar with val_loss
         progBar.update(
             progbar_,
@@ -1086,11 +1138,11 @@ def custom_train_loop_torch(
             ],
             finalize=True
         )
-
+ 
         print(f"\nTraining acc over epoch: {float(train_acc_list[-1]):.4f}, "
               f"Validation acc over epoch: {float(val_acc_list[-1]):.4f}")
         print(f"\nTime taken for epoch {epoch}: {time.time() - start_time:.2f}s")
-
+ 
         # Eearly stopping: on epoch end
         if early_stop:
             wait += 1
@@ -1104,12 +1156,12 @@ def custom_train_loop_torch(
                 print("\nRestoring model weights from the end of the best epoch.")
                 model.set_weights(best_weights)
                 break
-
+ 
     # Eearly stopping: on train end
     if early_stop:
         if stopped_epoch > 0:
             print(f"\nEpoch {stopped_epoch + 1}: early stopping")
-
+ 
     # Test on test set
     running_test_loss = 0.0
     for step, (x_batch_test, y_batch_test) in enumerate(test_dataloader):
@@ -1118,22 +1170,22 @@ def custom_train_loop_torch(
         running_test_loss += test_loss.cpu().detach().numpy()
         # Update val metrics
         test_acc_metric.update_state(y_batch_test, test_logits)
-
+ 
     # Update progBar with test_loss
     progBar.update(
         progbar_,
         values=[('test_loss', running_test_loss / (step + 1))],
         finalize=True
     )
-
+ 
     test_acc = test_acc_metric.result().cpu().detach().numpy()
     test_loss = running_test_loss / (step + 1)
     test_acc_metric.reset_state()
-
+ 
     print(f"Test acc: {float(test_acc):.4f} | "
           f"Test loss: {float(test_loss):.4f}")
     print(f"\nTrain, eval total time: {time.time() - start_time:.2f}s")
-
+ 
     # Save the outputs in a dictionary
     out = {}
     out['train_loss'] = train_loss_list
@@ -1144,18 +1196,18 @@ def custom_train_loop_torch(
     out['test_loss'] = test_loss
     if early_stop:
         out['stopped'] = stopped_epoch
-
+ 
     return model, out
-
-
+ 
+ 
 def custom_train_loop_jax(
         model, loss_fn, optimizer, Masks, batch_size, num_epochs,
         x_train, y_train, x_val, y_val, x_test, y_test,
-        shuffle=True, early_stop=False, patience=0
+        shuffle=True, early_stop=False, patience=0, SignMasks=None
     ):
     """
     Create the custom training loop for better handling and zeroing out gradients based on masks.
-
+ 
     Parameters
     ----------
     model : tensorflow.python.keras.engine.functional.Functional
@@ -1185,13 +1237,13 @@ def custom_train_loop_jax(
         Test set labels.
     shuffle : boolean, optional
         To shuffle the train data before training. The default is True.
-
+ 
     Raises
     ------
     ValueError
         Raise an error if the modified gradient list is not the same size as
         the original.
-
+ 
     Returns
     -------
     model : tensorflow.python.keras.engine.functional.Functional
@@ -1202,20 +1254,20 @@ def custom_train_loop_jax(
     """
     import jax
     import tensorflow as tf
-
+ 
     # Prepare the metrics.
     train_acc_metric = keras.metrics.SparseCategoricalAccuracy()
     val_acc_metric = keras.metrics.SparseCategoricalAccuracy()
     test_acc_metric = keras.metrics.SparseCategoricalAccuracy()
-
+ 
     metrics_names = ['train_loss', 'val_loss']
-
+ 
     def compute_loss_and_updates(
         trainable_variables,
         non_trainable_variables,
         metric_variables,
         x, y):
-
+ 
         y_pred, non_trainable_variables = model.stateless_call(
             trainable_variables, non_trainable_variables, x
         )
@@ -1224,11 +1276,11 @@ def custom_train_loop_jax(
             metric_variables, y, y_pred
         )
         return loss, (non_trainable_variables, metric_variables)
-
-
+ 
+ 
     grad_fn = jax.value_and_grad(compute_loss_and_updates, has_aux=True)
-
-
+ 
+ 
     @jax.jit
     def train_step(state, data):
         (
@@ -1256,7 +1308,7 @@ def custom_train_loop_jax(
                  metric_variables
                  )
         return loss, state
-
+ 
     @jax.jit
     def eval_step(state, data):
         trainable_variables, non_trainable_variables, metric_variables = state
@@ -1273,8 +1325,8 @@ def custom_train_loop_jax(
             non_trainable_variables,
             metric_variables,
         )
-
-
+ 
+ 
     @jax.jit
     def test_step(state, data):
         trainable_variables, non_trainable_variables, metric_variables = state
@@ -1291,13 +1343,13 @@ def custom_train_loop_jax(
             non_trainable_variables,
             metric_variables,
         )
-
+ 
     # Build optimizer variables.
     optimizer.build(model.trainable_variables)
     trainable_variables = model.trainable_variables
     non_trainable_variables = model.non_trainable_variables
     optimizer_variables = optimizer.variables
-
+ 
     # Set-up the train, val and test state tuples
     train_metric_variables = train_acc_metric.variables
     train_state = (
@@ -1306,10 +1358,10 @@ def custom_train_loop_jax(
         optimizer_variables,
         train_metric_variables,
     )
-
+ 
     # Set-up the Keras data loaders-datasets
     train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-
+ 
     # Create the datasets for keras loop.
     if shuffle:
         train_dataset = train_dataset.shuffle(buffer_size=train_dataset.cardinality(),
@@ -1320,15 +1372,15 @@ def custom_train_loop_jax(
     val_dataset = val_dataset.batch(batch_size)
     test_dataset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
     test_dataset = test_dataset.batch(batch_size)
-
+ 
     # initialize early stop params on train begin
     if early_stop:
         wait = 0
         best_weights = None
         stopped_epoch = 0
         best = float("inf")
-
-
+ 
+ 
     # Training loop
     # lists to store the results
     train_loss_list, train_acc_list = [], []
@@ -1338,9 +1390,9 @@ def custom_train_loop_jax(
     for epoch in range(num_epochs):
         print(f"\nepoch {epoch+1}/{num_epochs}")
         progBar = Progbar(progbar_, stateful_metrics=metrics_names)
-
+ 
         start_time = time.time()
-
+ 
         running_train_loss = 0.0
         # Iterate over the batches of the dataset.
         for step, train_data in enumerate(train_dataset):
@@ -1349,7 +1401,28 @@ def custom_train_loop_jax(
             running_train_loss += train_loss
             # Update the progbar
             progBar.update(step, values=[('train_loss', train_loss)])
-
+ 
+            # Enforce a fixed weight-sign constraint (e.g., Dale's-law-style
+            # 80% positive / 20% negative), if one was supplied. Applied
+            # here in the outer (non-jitted) loop, on the plain arrays
+            # threaded through `train_state`.
+            if SignMasks is not None:
+                (
+                    trainable_variables,
+                    non_trainable_variables,
+                    optimizer_variables,
+                    metric_variables,
+                ) = train_state
+                trainable_variables = project_weights(
+                    trainable_variables, Masks, SignMasks
+                )
+                train_state = (
+                    trainable_variables,
+                    non_trainable_variables,
+                    optimizer_variables,
+                    metric_variables,
+                )
+ 
         _, _, _, metric_variables = train_state
         for variable, value in zip(train_acc_metric.variables, metric_variables):
             variable.assign(value)
@@ -1358,7 +1431,7 @@ def custom_train_loop_jax(
         train_loss_list.append(running_train_loss / (step + 1))
         # reset the state
         train_acc_metric.reset_state()
-
+ 
         # prepare for validation
         val_metric_variables = val_acc_metric.variables
         (
@@ -1372,33 +1445,33 @@ def custom_train_loop_jax(
             non_trainable_variables,
             val_metric_variables,
         )
-
+ 
         # Run a validation loop at the end of each epoch.
         running_val_loss = 0.0
         for step, val_data in enumerate(val_dataset):
             val_data = (val_data[0].numpy(), val_data[1].numpy())
             val_loss, val_state = eval_step(val_state, val_data)
             running_val_loss += val_loss
-
+ 
         # Update progBar with val_loss
         values = [('train_loss', train_loss), ('val_loss', running_val_loss / (step + 1))]
         progBar.update(progbar_, values=values,
                        finalize=True)
-
+ 
         _, _, metric_variables = val_state
         for variable, value in zip(val_acc_metric.variables, metric_variables):
             variable.assign(value)
         val_acc_list.append(val_acc_metric.result())
-
+ 
         # calculate and store validation loss and accuracy
         val_loss_list.append(running_val_loss / (step + 1))
         val_acc_metric.reset_state()
-
+ 
         print(f"\nTraining acc over epoch: {float(train_acc_list[-1]):.4f}, "
               f"Validation acc over epoch: {float(val_acc_list[-1]):.4f}")
-
+ 
         print(f"\nTime taken: {time.time() - start_time:.2f}s")
-
+ 
         # Eearly stopping: on epoch end
         if early_stop:
             wait += 1
@@ -1412,12 +1485,12 @@ def custom_train_loop_jax(
                 print("\nRestoring model weights from the end of the best epoch.")
                 model.set_weights(best_weights)
                 break
-
+ 
     # Eearly stopping: on train end
     if early_stop:
         if stopped_epoch > 0:
             print(f"\nEpoch {stopped_epoch + 1}: early stopping")
-
+ 
     test_metric_variables = test_acc_metric.variables
     (
         trainable_variables,
@@ -1430,27 +1503,27 @@ def custom_train_loop_jax(
         non_trainable_variables,
         test_metric_variables,
     )
-
+ 
     # Test on test set
     running_test_loss = 0.0
     for step, test_data in enumerate(test_dataset):
         test_data = (test_data[0].numpy(), test_data[1].numpy())
         test_loss, test_state = test_step(test_state, test_data)
         running_test_loss += test_loss
-
+ 
     # Update progBar with test_loss
     values = [('test_loss', running_test_loss / (step + 1))]
     progBar.update(progbar_, values=values, finalize=True)
-
+ 
     _, _, metric_variables = test_state
     for variable, value in zip(test_acc_metric.variables, metric_variables):
         variable.assign(value)
     test_acc_ = test_acc_metric.result()
-
+ 
     test_acc_metric.reset_state()
     print(f"\nTest acc: {test_acc_:.4f}")
     print(f"\n\nTime taken: {time.time() - start_time:.2f}s")
-
+ 
     # Save the outputs in a dictionary
     out = {}
     out['train_loss'] = train_loss_list
@@ -1459,12 +1532,12 @@ def custom_train_loop_jax(
     out['val_acc'] = val_acc_list
     out['test_acc'] = test_acc_
     out['test_loss'] = running_test_loss / (step + 1)
-
+ 
     # Attach the new variable values back to the model.
     trainable_variables, non_trainable_variables, optimizer_variables, _ = train_state
     for variable, value in zip(model.trainable_variables, trainable_variables):
         variable.assign(value)
     for variable, value in zip(model.non_trainable_variables, non_trainable_variables):
         variable.assign(value)
-
+ 
     return model, out

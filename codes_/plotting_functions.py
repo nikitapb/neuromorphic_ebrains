@@ -174,6 +174,7 @@ def fix_names(df):
     df = df.replace(['dend_ann_global_rfs'], 'dANN-GRF')
     df = df.replace(['dend_ann_local_rfs'], 'dANN-LRF')
     df = df.replace(['dend_ann_random'], 'dANN-R')
+    df = df.replace(['dend_ann_random_sign_constrained'], 'dANN-R-DL')
     df = df.replace(['dend_ann_all_to_all'], 'pdANN')
     df = df.replace(['vanilla_ann'], 'vANN')
     df = df.replace(['vanilla_ann_random'], 'vANN-R')
@@ -709,6 +710,8 @@ def short_to_long_names(names):
             long_names.append("vanilla_ann_global_rfs")
         elif n == "vANN":
             long_names.append("vanilla_ann")
+        elif n == "dANN-R-DL":
+            long_names.append("dend_ann_random_sign_constrained")
     return long_names
 
 
