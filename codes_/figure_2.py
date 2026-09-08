@@ -112,6 +112,12 @@ for label, ax in axd.items():
 
 # Load data (deserialize)
 fname_store =  pathlib.Path(f"{dirname}/output_all_with_dl")
+
+import sys, numpy.core, numpy.core.numeric, numpy.core.multiarray
+sys.modules['numpy._core'] = numpy.core
+sys.modules['numpy._core.numeric'] = numpy.core.numeric
+sys.modules['numpy._core.multiarray'] = numpy.core.multiarray 
+
 with open(f'{fname_store}.pkl', 'rb') as file:
     results = pickle.load(file)
 df_all = fix_names(results['training'])
