@@ -37,6 +37,7 @@ model_type = int(sys.argv[5])
 sparse = False
 input_sample = None
 sign_constrained = False
+neg_fraction = 0.2  # default negative-weight fraction for sign-constrained models
 if model_type == 0:
     # dendritic ANN (dANN) with random connections
     conventional = False
@@ -97,17 +98,20 @@ elif model_type == 11:
     sparse = True
     input_sample = 'all_to_all'
 elif model_type == 12:
-    # 20% forced <=0, fixed for the whole training run
+    # 20% forced <=0, fixed for the whole training run (Dale Law's)
     conventional = False
     rfs = False
     sign_constrained = True
+    neg_fraction = 0.2
 
-elif model_type == 13:
-    #20 % forced <= 0, fixed for the whole training run, with local RFs
-    conventional = False 
+elif model_type == 15:
+    # dANN-R-DL, new version: 30% forced <= 0, fixed for the whole
+    # training run, with local RFs, and humanized network
+    conventional = False
     rfs = True
     rfs_type = 'dendritic'
     sign_constrained = True
+    neg_fraction = 0.3
 
 sigma = float(sys.argv[6])
 # Get the data
@@ -199,7 +203,7 @@ PARAMSmod = [PARAMS[i]*Masks[i] for i in range(len(PARAMS))]
 # them, if this is the sign-constrained model.
 SignMasks = None
 if sign_constrained:
-    SignMasks = make_sign_masks(Masks, neg_fraction=0.2, seed=trial)
+    SignMasks = make_sign_masks(Masks, neg_fraction=neg_fraction, seed=trial)
     PARAMSmod = project_weights(PARAMSmod, Masks, SignMasks)
 
 # Set the initial weights by zeroing out not connected nodes.

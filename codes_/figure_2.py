@@ -130,8 +130,9 @@ models_to_keep = [
     'dANN-GRF',
     'pdANN',
     'vANN',
-    'dANN-R-DL',  # dANN-R with a fixed 80% positive / 20% negative
-                  # weight-sign constraint (Dale's-law style)
+    'dANN-LRF-DL',  # dANN with local RFs and a fixed 70% positive / 30%
+                    # negative weight-sign constraint (Dale's-law style,
+                    # new version, replaces the random-connectivity dANN-R-DL)
 ]
 df_all_ = keep_models(df_all, models_to_keep)
 df_test_ = keep_models(df_test, models_to_keep)

@@ -37,8 +37,8 @@ Usage
     # from the repository root
     python append_sign_constrained.py \
         --reference DATA/results_fmnist_1_layer/output_all_final.pkl \
-        --raw-dir codes_/DATA/results_fmnist_1_layer/dend_ann_random_sign_constrained \
-        --model-name dend_ann_random_sign_constrained \
+        --raw-dir codes_/DATA/results_fmnist_1_layer/dend_ann_local_rfs_sign_constrained \
+        --model-name dend_ann_local_rfs_sign_constrained \
         --output DATA/results_fmnist_1_layer/output_all_with_dl.pkl
 
     # inspect what would be appended without writing anything
@@ -53,6 +53,18 @@ import argparse
 
 import numpy as np
 import pandas as pd
+
+# Raw result pickles (and possibly the reference pickle) may have been written
+# under numpy>=2.0, which moved numpy.core -> numpy._core. Older numpy in this
+# environment lacks that module path, so unpickling fails with
+# "No module named 'numpy._core...'" unless we alias it back. Same shim as
+# figure_2.py.
+import numpy.core
+import numpy.core.numeric
+import numpy.core.multiarray
+sys.modules.setdefault('numpy._core', numpy.core)
+sys.modules.setdefault('numpy._core.numeric', numpy.core.numeric)
+sys.modules.setdefault('numpy._core.multiarray', numpy.core.multiarray)
 
 
 FNAME_RE = re.compile(
@@ -138,7 +150,7 @@ def main():
                         help="existing aggregated pickle to append to")
     parser.add_argument("--raw-dir", required=True,
                         help="directory of per-run result pickles for the new model")
-    parser.add_argument("--model-name", default="dend_ann_random_sign_constrained",
+    parser.add_argument("--model-name", default="dend_ann_local_rfs_sign_constrained",
                         help="raw model name, must match the fix_names mapping key")
     parser.add_argument("--output", default=None,
                         help="where to write the merged pickle")
