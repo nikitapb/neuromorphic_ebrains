@@ -11,6 +11,7 @@ import time
 import keras
 import struct
 import numpy as np
+import tensorflow as tf
 
 from keras.utils import Progbar
 
@@ -321,7 +322,6 @@ def load_label(path_label):
         return label
 
 
-
 def perturb_array(arr, perturbation, amin=0, amax=1):
     """
     Perturbation function that adds a given pertubation(s) to a given image(s).
@@ -542,11 +542,197 @@ def get_model_name(
 
     return fname_model
 
+#Coupling function, added
+def dendritic_coupling(x, soma_n, dends_per_soma, fraction=0.2, lam=0.1):
+    import tensorflow as tf
 
+    n_coupled = max(3, int(round(soma_n * fraction)))
+    n_coupled = min(n_coupled, soma_n)
+
+    x0 = x
+    updates = []
+
+    for s in range(n_coupled):
+        prev_s = (s - 1) % n_coupled
+        next_s = (s + 1) % n_coupled
+
+        for d in range(dends_per_soma):
+            partner_s = prev_s if d % 2 == 0 else next_s
+
+            i = s * dends_per_soma + d
+            j = partner_s * dends_per_soma + d
+
+            updates.append((i, x0[:, i] + lam * x0[:, j]))
+
+    if not updates:
+        return x
+
+    cols = tf.unstack(x, axis=1)
+    for i, value in updates:
+        cols[i] = value
+
+    return tf.stack(cols, axis=1)
+
+@keras.utils.register_keras_serializable(package="dANN")
+class DendriticCoupling(keras.layers.Layer):
+    """
+    Fixed pre-activation coupling between dendrites of neighbouring somata.
+
+    A fraction of somata forms a ring-coupled population.
+    Every dendrite of those somata is coupled:
+        first half -> previous soma
+        second half -> next soma
+
+    Coupling:
+        z_i* = z_i + lambda * z_partner
+
+    The operation occurs before the dendritic nonlinearity and adds
+    no trainable parameters because lambda is fixed.
+    """
+
+    def __init__(
+        self,
+        soma_n,
+        dends_per_soma,
+        coupling_fraction=0.20,
+        coupling_lambda=0.10,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        # Store architecture/coupling parameters.
+        self.soma_n = int(soma_n)
+        self.dends_per_soma = int(dends_per_soma)
+        self.coupling_fraction = float(coupling_fraction)
+        self.coupling_lambda = float(coupling_lambda)
+
+        # One dendrite cannot be symmetrically distributed across two neighbours.
+        if self.dends_per_soma < 2:
+            raise ValueError(
+                "dANN-C requires at least 2 dendrites per soma."
+            )
+
+        # Define the coupled population as the first fraction of somata.
+        self.n_coupled = int(round(
+            self.soma_n * self.coupling_fraction
+        ))
+
+        # A ring needs >=3 cells to provide distinct previous/next neighbours.
+        if self.n_coupled < 3:
+            raise ValueError(
+                "The coupled population must contain at least 3 somata."
+            )
+
+        # Initialize every dendrite as uncoupled/self-referencing.
+        n_dendrites = self.soma_n * self.dends_per_soma
+        partner = np.arange(n_dendrites, dtype=np.int32)
+        coupled_mask = np.zeros(n_dendrites, dtype=np.float32)
+
+        # Assign every dendrite of coupled somata to previous or next neighbour.
+        for s in range(self.n_coupled):
+            prev_s = (s - 1) % self.n_coupled
+            next_s = (s + 1) % self.n_coupled
+
+            # Even D gives a perfectly symmetric D/2 : D/2 distribution.
+            split = self.dends_per_soma // 2
+
+            for d in range(self.dends_per_soma):
+
+                # First half couples backwards; second half couples forwards.
+                partner_s = prev_s if d < split else next_s
+
+                # Convert soma-local dendrite numbers into global dendrite indices.
+                i = s * self.dends_per_soma + d
+                j = partner_s * self.dends_per_soma + d
+
+                partner[i] = j
+                coupled_mask[i] = 1.0
+
+        # Store topology as constant tensors used during every forward pass.
+        self.partner = tf.constant(partner, dtype=tf.int32)
+        self.coupled_mask = tf.constant(
+            coupled_mask,
+            dtype=tf.float32,
+        )
+
+    def call(self, x):
+        # Read the pre-activation of each dendrite's assigned partner.
+        partner_activity = tf.gather(
+            x,
+            self.partner,
+            axis=1,
+        )
+
+        # Add lambda-scaled partner activity only to coupled dendrites.
+        return x + (
+            self.coupling_lambda
+            * partner_activity
+            * self.coupled_mask
+        )
+
+    def get_config(self):
+        # Save coupling parameters so .keras models can be reloaded.
+        config = super().get_config()
+        config.update({
+            "soma_n": self.soma_n,
+            "dends_per_soma": self.dends_per_soma,
+            "coupling_fraction": self.coupling_fraction,
+            "coupling_lambda": self.coupling_lambda,
+        })
+        return config
+
+    def call(self, x):
+        """
+        x has shape:
+
+            [batch_size, total_number_of_dendrites]
+
+        x contains dendritic pre-activations z = Wx + b.
+        """
+
+        # Retrieve each dendrite's partner activity.
+        partner_activity = tf.gather(
+            x,
+            self.partner,
+            axis=1,
+        )
+
+        # Apply coupling only to dendrites belonging to the
+        # coupled population.
+        coupled_input = (
+            self.coupling_lambda
+            * partner_activity
+            * self.coupled_mask
+        )
+
+        # Add partner signal to the dendrite's own signal.
+        #
+        # z_C = z + lambda * z_partner
+        return x + coupled_input
+
+    def get_config(self):
+        """
+        Allows Keras to save and reload this custom layer
+        inside .keras model files.
+        """
+        config = super().get_config()
+
+        config.update({
+            "soma_n": self.soma_n,
+            "dends_per_soma": self.dends_per_soma,
+            "coupling_fraction": self.coupling_fraction,
+            "coupling_lambda": self.coupling_lambda,
+        })
+
+        return config
+
+    
 def get_model(
         input_shape, num_layers, dends, soma,
         num_classes, fname_model, relu_slope=0.1,
-        dropout=False, rate=0.0):
+        dropout=False, rate=0.0,
+        coupled=False, coupling_fraction=0.20,
+        coupling_lambda=0.1):
     """
     Buld the model.
 
@@ -583,36 +769,52 @@ def get_model(
         shape=input_shape,
         name="input"
     )
-    # First hidden dendritic and somatic layer
-    # Dendritic layer
+    # First dendritic pre-activation: input -> all dendritic units.
     dend_l = keras.layers.Dense(
-        dends[0]*soma[0],
-        name="dend_1"
+        dends[0] * soma[0],
+        name="dend_1",
     )(input_l)
-    # Dendritic activation function
+
+    # Optional dANN-C coupling before dendritic nonlinearity.
+    if coupled:
+        dend_l = DendriticCoupling(
+            soma_n=soma[0],
+            dends_per_soma=dends[0],
+            coupling_fraction=coupling_fraction,
+            coupling_lambda=coupling_lambda,
+            name="dend_1_coupling",
+        )(dend_l)
+
+    # Dendritic nonlinear activation.
     dend_l = keras.layers.ReLU(
         negative_slope=relu_slope,
-        name="dend_1_relu"
+        name="dend_1_relu",
     )(dend_l)
+
+    # Optional dropout after dendritic activation.
     if dropout:
         dend_l = keras.layers.Dropout(
             rate=rate,
-            name="dend_1_dropout"
+            name="dend_1_dropout",
         )(dend_l)
-    # Somatic layer
+
+    # Structured dendrite -> soma integration.
     soma_l = keras.layers.Dense(
         soma[0],
-        name="soma_1"
+        name="soma_1",
     )(dend_l)
-    # Somatic activation function
+
+    # Somatic nonlinear activation.
     soma_l = keras.layers.ReLU(
         negative_slope=relu_slope,
-        name="soma_1_relu"
+        name="soma_1_relu",
     )(soma_l)
+
+    # Optional dropout after somatic activation.
     if dropout:
         soma_l = keras.layers.Dropout(
             rate=rate,
-            name="soma_1_dropout"
+            name="soma_1_dropout",
         )(soma_l)
 
     # For loop for more layers
@@ -1468,3 +1670,4 @@ def custom_train_loop_jax(
         variable.assign(value)
 
     return model, out
+

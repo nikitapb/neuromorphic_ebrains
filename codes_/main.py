@@ -20,10 +20,11 @@ from opt import get_model
 from opt import get_data
 from opt import get_model_name
 
-os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
+os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1] # determines which gpu is visible to tensorflow
 
 # Run parameters
 save = True
+
 seq_flag = False if int(sys.argv[2]) == 0 else True
 noise = True
 early_stop = False if int(sys.argv[3]) == 0 else True
@@ -34,6 +35,21 @@ rfs_type = 'somatic'
 model_type = int(sys.argv[5])
 sparse = False
 input_sample = None
+coupled = False
+
+# Default dANN-C coupling parameters
+coupling_fraction = 0.20
+coupling_lambda = 0.10
+
+# Optional command-line arguments
+# argv[16] = coupling fraction
+# argv[17] = coupling lambda
+if len(sys.argv) > 16:
+    coupling_fraction = float(sys.argv[16])
+
+if len(sys.argv) > 17:
+    coupling_lambda = float(sys.argv[17]) 
+
 if model_type == 0:
     # dendritic ANN (dANN) with random connections
     conventional = False
@@ -43,11 +59,11 @@ elif model_type == 1:
     conventional = False
     rfs = True
 elif model_type == 2:
-    # dendritic ANN (dANN) with local RFs
-    conventional = False
+    # dendritic ANN (dANN) with local RFs  # KEEP
+    conventional = False # with dendrites
     rfs = True
     rfs_type = 'dendritic'
-elif model_type == 3:
+elif model_type == 3: 
     # vanilla ANN (vANN) all-to-all connections (no RFs)
     conventional = True
     rfs = False
@@ -61,8 +77,8 @@ elif model_type == 5:
     conventional = True
     rfs = True
 elif model_type == 6:
-    # vanilla ANN (vANN) with local RFs
-    conventional = True
+    # vanilla ANN (vANN) with local RFs #KEEP
+    conventional = True # no dendrites
     rfs = True
     rfs_type = 'dendritic'
 elif model_type == 7:
@@ -76,7 +92,7 @@ elif model_type == 8:
     rfs = True
     sparse = True
 elif model_type == 9:
-    # sparse ANN (sANN) with local RFs
+    # sparse ANN (sANN) with local RFs #KEEP
     conventional = False
     rfs = True
     sparse = True
@@ -93,6 +109,18 @@ elif model_type == 11:
     rfs = True
     sparse = True
     input_sample = 'all_to_all'
+elif model_type == 13:
+    # dendritic ANN with local RFs + dendritic coupling (dANN-C)
+    conventional = False # with dendrites
+    rfs = True
+    sparse = False
+    rfs_type = 'dendritic' 
+    coupled = True
+    input_sample = None
+
+
+
+
 
 sigma = float(sys.argv[6])
 # Get the data
@@ -121,7 +149,7 @@ dends = num_layers*[num_dends]
 soma = num_layers*[num_soma]
 synapses = int(sys.argv[11])
 
-# Build the masks
+# Build the masks ###IMPORTANT 
 Masks = make_masks(
     dends,
     soma,
@@ -136,6 +164,7 @@ Masks = make_masks(
     rfs_type=rfs_type,
     rfs_mode='random',
     seed=trial,
+    input_sample=input_sample,
 )
 
 # Get the model
@@ -148,6 +177,12 @@ fname_model = get_model_name(
     rfs_type,
     input_sample
 )
+#segergate coupled models from uncoupled models
+if coupled:
+    frac_tag = int(round(coupling_fraction * 100))
+    lambda_tag = str(coupling_lambda).replace(".", "p")
+
+    fname_model += f"_C_frac{frac_tag}_lam{lambda_tag}"
 
 drop_flag = False if int(sys.argv[12]) == 0 else True
 rate_of_drop = float(sys.argv[13])
@@ -161,7 +196,7 @@ else:
 if drop_flag:
     fname_model += f"_dropout_{rate_of_drop}"
 
-# Get the model
+# Get the model  ##this builds the NN
 model = get_model(
     input_shape,
     num_layers,
@@ -171,14 +206,17 @@ model = get_model(
     fname_model=fname_model,
     dropout=drop_flag,
     rate=rate_of_drop,
+    coupled=coupled,
+    coupling_fraction=coupling_fraction,
+    coupling_lambda=coupling_lambda,
 )
 
 # Apply the masks to initial weights
-PARAMS = model.get_weights()
-PARAMSmod = [PARAMS[i]*Masks[i] for i in range(len(PARAMS))]
+PARAMS = model.get_weights() #extract weight tensor?
+PARAMSmod = [PARAMS[i]*Masks[i] for i in range(len(PARAMS))] #multiplies weight tensor by connectivity mask
 
 # Set the initial weights by zeroing out not connected nodes.
-model.set_weights(PARAMSmod)
+model.set_weights(PARAMSmod) #give masked weight back to model
 model_untrained = copy.deepcopy(model)
 
 # Instantiate the optimizer and the loss function
@@ -208,7 +246,7 @@ print(f"\nModel: {fname_model}, trial: {trial}, layers: {num_layers}, "
       f"noise: {sigma}, dataset: {datatype}, tag: {file_tag}\n")
 
 # train and evaluate the model
-model, out = custom_train_loop(
+model, out = custom_train_loop(   #the masks are also passed into training
     model, loss_fn, optimizer,
     Masks, batch_size,
     num_epochs,

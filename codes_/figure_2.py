@@ -252,4 +252,4 @@ fig.savefig(
     bbox_inches='tight',
     dpi=600
 )
-fig.show()
+fig.savefig("figure_2.pdf", bbox_inches="tight")
