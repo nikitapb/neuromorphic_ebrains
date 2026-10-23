@@ -5,6 +5,9 @@ Created on Tue May 18 12:00:15 2021.
 
 @author: spiros
 """
+
+#What the hell is going on ?
+
 import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
