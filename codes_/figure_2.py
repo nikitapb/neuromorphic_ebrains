@@ -25,7 +25,7 @@ plt.rcParams.update(my_style())
 
 palette = [
     '#8de5a1', '#ff9f9b', '#a1c9f4',
-    '#d0bbff', '#8d8d8d'
+    '#d0bbff', '#8d8d8d', '#ffb482'
 ]
 
 datatype = 'fmnist'
@@ -36,7 +36,7 @@ if not os.path.exists(f"{dirname_figs}"):
 seq = False
 seq_tag = "_sequential" if seq else ""
 num_layers = 1
-data_dir = "../DATA/"
+data_dir = "DATA/"
 dirname = f"{data_dir}/results_{datatype}_{num_layers}_layer{seq_tag}/"
 
 # Create the figure
@@ -111,7 +111,13 @@ for label, ax in axd.items():
 
 
 # Load data (deserialize)
-fname_store =  pathlib.Path(f"{dirname}/output_all_final")
+fname_store =  pathlib.Path(f"{dirname}/output_all_with_dl")
+
+import sys, numpy.core, numpy.core.numeric, numpy.core.multiarray
+sys.modules['numpy._core'] = numpy.core
+sys.modules['numpy._core.numeric'] = numpy.core.numeric
+sys.modules['numpy._core.multiarray'] = numpy.core.multiarray 
+
 with open(f'{fname_store}.pkl', 'rb') as file:
     results = pickle.load(file)
 df_all = fix_names(results['training'])
@@ -124,6 +130,9 @@ models_to_keep = [
     'dANN-GRF',
     'pdANN',
     'vANN',
+    'dANN-LRF-DL',  # dANN with local RFs and a fixed 70% positive / 30%
+                    # negative weight-sign constraint (Dale's-law style,
+                    # new version, replaces the random-connectivity dANN-R-DL)
 ]
 df_all_ = keep_models(df_all, models_to_keep)
 df_test_ = keep_models(df_test, models_to_keep)

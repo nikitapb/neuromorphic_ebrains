@@ -45,7 +45,7 @@ for datatype in datatypes:
         'dANN-R', 'dANN-LRF', 'dANN-GRF', 'pdANN',
         'sANN', 'sANN-LRF', 'sANN-GRF','psANN',
         'vANN-R', 'vANN-LRF', 'vANN-GRF',
-        'vANN',
+        'vANN', 'dANN-R-DL',
     ]
 
     df_all_ = keep_models(df_all, model_to_keep)
@@ -92,7 +92,7 @@ for datatype in datatypes:
         'dANN-R', 'dANN-LRF', 'dANN-GRF', 'pdANN',
         'sANN', 'sANN-LRF', 'sANN-GRF','psANN',
         'vANN-R', 'vANN-LRF', 'vANN-GRF',
-        'vANN',
+        'vANN', 'dANN-R-DL'
     ]
 
     df_test_ = keep_models(df_test, model_to_keep)
